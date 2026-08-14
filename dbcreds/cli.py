@@ -73,10 +73,24 @@ def init():
 
     manager = CredentialManager()
     console.print(f"✅ Configuration directory: [green]{manager.config_dir}[/green]")
-    console.print(f"✅ Available backends: [green]{len(manager.backends)}[/green]")
 
-    for backend in manager.backends:
-        console.print(f"  - {backend.__class__.__name__}")
+    # list_backends() forces the lazy initialization; reading manager.backends
+    # directly here reported 0 backends before they had been set up.
+    available = manager.list_backends()
+    console.print(f"✅ Available backends: [green]{len(available)}[/green]")
+
+    for name, stores_secrets in available:
+        suffix = "" if stores_secrets else " [dim](metadata only)[/dim]"
+        console.print(f"  - {name}{suffix}")
+
+    active = manager.get_active_backend_name()
+    if active:
+        console.print(f"✅ Passwords will be stored in: [green]{active}[/green]")
+    else:
+        console.print(
+            "[bold red]⚠️  No secure credential store available -- "
+            "saving credentials will fail rather than drop the password.[/bold red]"
+        )
 
     console.print("\n[bold green]dbcreds initialized successfully![/bold green]")
 
