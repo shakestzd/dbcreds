@@ -72,6 +72,20 @@ The generated password is printed once and cannot be recovered from that
 output afterwards — read it back with `dbcreds show dev --password`. Generating
 a password does not change it on the database; set it there yourself.
 
+### Update Connection Details
+```bash
+# Change any subset of the connection details
+dbcreds update dev --host new-host --port 6543
+dbcreds update dev --database newdb --username newuser
+
+# Combine with a rotation
+dbcreds update dev --generate --host new-host
+```
+
+Only the options you pass are changed; the password, expiry policy, connection
+options and every unmentioned field are preserved. `dbcreds update dev` with no
+options changes nothing and exits non-zero.
+
 ### Show Active Backends
 ```bash
 dbcreds backends

@@ -26,7 +26,7 @@ from dbcreds.core.exceptions import (
     ValidationError,
 )
 from dbcreds.core.manager import CredentialManager
-from dbcreds.core.models import DatabaseType
+from dbcreds.core.models import DatabaseCredentials, DatabaseType
 from dbcreds.core.security import DEFAULT_PASSWORD_LENGTH, generate_password
 
 # Configure logger for CLI
@@ -57,6 +57,23 @@ def _show_generated_password(password: str) -> None:
     console.print(
         "[dim]Set this on the database account itself -- dbcreds only stores it.[/dim]"
     )
+
+
+def _existing_expiry_days(creds: DatabaseCredentials) -> Optional[int]:
+    """
+    Recover an environment's configured expiry window, in days.
+
+    Used so an update that does not mention --expires-days keeps the policy the
+    environment already had instead of silently resetting it to the default.
+
+    Returns:
+        The window in days, or None if no expiry is configured
+    """
+    if creds.password_expires_at is None or creds.password_updated_at is None:
+        return None
+
+    window = creds.password_expires_at - creds.password_updated_at
+    return window.days if window.days > 0 else None
 
 
 def version_callback(value: bool):
@@ -340,14 +357,20 @@ def remove(
 @app.command()
 def update(
     name: str = typer.Argument(..., help="Environment name"),
-    password: bool = typer.Option(False, "--password", help="Update password only"),
-    expires_days: Optional[int] = typer.Option(None, "--expires-days", help="Update password expiry"),
+    password: bool = typer.Option(False, "--password", help="Prompt for a new password"),
+    expires_days: Optional[int] = typer.Option(
+        None, "--expires-days", help="Update password expiry in days (0 to disable)"
+    ),
     generate: bool = typer.Option(
         False, "--generate", "-g", help="Rotate to a newly generated strong password"
     ),
     length: int = typer.Option(
         DEFAULT_PASSWORD_LENGTH, "--length", help="Password length when using --generate"
     ),
+    host: Optional[str] = typer.Option(None, "--host", "-h", help="New database host"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="New database port"),
+    database: Optional[str] = typer.Option(None, "--database", "-d", help="New database name"),
+    username: Optional[str] = typer.Option(None, "--username", "-u", help="New database username"),
 ):
     """Update credentials for an environment."""
     manager = CredentialManager()
@@ -357,7 +380,28 @@ def update(
         creds = manager.get_credentials(name, check_expiry=False)
 
         # --generate implies a password rotation, so it does not need --password too.
-        if password or generate:
+        rotating = password or generate
+        changed_fields = {
+            field: value
+            for field, value in (
+                ("host", host),
+                ("port", port),
+                ("database", database),
+                ("username", username),
+            )
+            if value is not None
+        }
+
+        if not rotating and not changed_fields and expires_days is None:
+            console.print(
+                "[yellow]Nothing to update.[/yellow]\n"
+                "Pass --password or --generate to change the password, "
+                "--expires-days to change expiry, or "
+                "--host/--port/--database/--username to change connection details."
+            )
+            raise typer.Exit(1)
+
+        if rotating:
             if generate:
                 # A ValidationError here is reported by the handler below; catching
                 # it locally would print the message twice.
@@ -371,18 +415,40 @@ def update(
                     console.print("[red]Passwords do not match![/red]")
                     raise typer.Exit(1)
 
-            manager.set_credentials(
-                name,
-                creds.host,
-                creds.port,
-                creds.database,
-                creds.username,
-                new_password,
-                expires_days or 90,
-            )
-            console.print(f"✅ [green]Password updated for environment '{name}'[/green]")
+            # A real rotation: let the timestamp default to now.
+            password_updated_at = None
         else:
-            console.print("[yellow]Full credential update not implemented yet[/yellow]")
+            # Keep the stored secret, and its true rotation date, untouched --
+            # stamping "updated now" would misreport when the password last changed.
+            new_password = creds.password.get_secret_value()
+            password_updated_at = creds.password_updated_at
+
+        # An unspecified expiry keeps whatever policy the environment already had,
+        # rather than silently resetting it to the 90-day default. 0 disables it.
+        expiry_days = (
+            _existing_expiry_days(creds) if expires_days is None else expires_days
+        )
+
+        manager.set_credentials(
+            name,
+            host=changed_fields.get("host", creds.host),
+            port=changed_fields.get("port", creds.port),
+            database=changed_fields.get("database", creds.database),
+            username=changed_fields.get("username", creds.username),
+            password=new_password,
+            password_expires_days=expiry_days,
+            password_updated_at=password_updated_at,
+            # Preserved explicitly; set_credentials rebuilds the record from
+            # scratch, so anything not passed back in is dropped.
+            **creds.options,
+        )
+
+        updated = (["password"] if rotating else []) + sorted(changed_fields)
+        if expires_days is not None:
+            updated.append("expiry")
+        console.print(
+            f"✅ [green]Updated {', '.join(updated)} for environment '{name}'[/green]"
+        )
 
     except CredentialNotFoundError:
         console.print(f"[red]Environment '{name}' not found![/red]")

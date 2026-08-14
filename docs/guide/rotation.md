@@ -38,9 +38,17 @@ if creds.is_password_expired():
 # Set 90-day expiry
 dbcreds add dev --expires-days 90
 
-# Update expiry
+# Update expiry, leaving the password untouched
 dbcreds update dev --expires-days 180
+
+# Disable expiry entirely
+dbcreds update dev --expires-days 0
 ```
+
+Changing expiry does not touch the stored password or its recorded rotation
+date, so the "last updated" timestamp keeps reflecting when the password
+actually changed. Conversely, rotating without `--expires-days` keeps the
+environment's existing expiry window rather than resetting it to the default.
 
 ## Checking Status
 
