@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="wipnote-version" content="1.0">
+    <title>Fail loudly when no secret-capable backend stores a credential</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <article id="feat-65cadf82"
+             data-type="feature"
+             data-status="in-progress"
+             data-priority="medium"
+             data-created="2026-08-14T14:53:27.6589"
+             data-updated="2026-08-14T14:53:34.693901" data-agent-assigned="claude-code" data-created-by-agent="claude-code" data-created-by-model="claude-opus-5[1m]" data-created-by-cli-version="0.67.1">
+
+        <header>
+            <h1>Fail loudly when no secret-capable backend stores a credential</h1>
+            <div class="metadata">
+                <span class="badge status-in-progress">In Progress</span>
+                <span class="badge priority-medium">Medium Priority</span>
+            </div>
+        </header>
+
+        <nav data-graph-edges>
+            <section data-edge-type="implemented_in">
+                <h3>Implemented In:</h3>
+                <ul>
+                    <li><a href="../sessions/1f090571-d9b1-412f-b1d0-ba5a872459ac.html" data-relationship="implemented_in" data-since="2026-08-14T14:53:34.693851">session 1f090571-d9b1-412f-b1d0-ba5a872459ac</a></li>
+                </ul>
+            </section>
+        </nav>
+
+        <section data-content>
+            <h3>Description</h3>
+            <p>set_credentials() counted metadata-only ConfigFileBackend as success, silently losing passwords. Add stores_secrets capability flag, raise CredentialError, add backend introspection + regression test. Also repo hygiene: drop stray backup files, untrack settings.local.json.</p>
+        </section>
+    </article>
+</body>
+</html>
