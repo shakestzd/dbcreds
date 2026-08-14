@@ -1,5 +1,24 @@
 # Password Rotation
 
+## Rotating to a Generated Password
+
+```bash
+# Generate a strong password, store it, and show it once
+dbcreds update dev --generate
+
+# Or generate one separately to set on the database first
+dbcreds generate --length 48
+```
+
+`--generate` implies a password rotation, so `--password` is not needed as well.
+The new password is displayed once and then only retrievable via
+`dbcreds show dev --password`.
+
+Rotation order matters: dbcreds stores what you tell it, it does not change the
+password on the database. Set the new password on the database account first (or
+in the same maintenance window), otherwise the stored credential will no longer
+match the server.
+
 ## Automatic Expiry Tracking
 
 dbcreds tracks password age and expiry:

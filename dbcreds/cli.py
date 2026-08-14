@@ -8,6 +8,7 @@ credentials using Typer and Rich.
 
 import os
 import sys
+import time
 from typing import Optional
 
 import typer
@@ -19,9 +20,14 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
 from dbcreds import __version__
-from dbcreds.core.exceptions import CredentialError, CredentialNotFoundError
+from dbcreds.core.exceptions import (
+    CredentialError,
+    CredentialNotFoundError,
+    ValidationError,
+)
 from dbcreds.core.manager import CredentialManager
 from dbcreds.core.models import DatabaseType
+from dbcreds.core.security import DEFAULT_PASSWORD_LENGTH, generate_password
 
 # Configure logger for CLI
 logger.remove()  # Remove default handler
@@ -38,6 +44,19 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 console = Console()
+
+
+def _show_generated_password(password: str) -> None:
+    """
+    Display a generated password once.
+
+    Printed with markup disabled so the password is never parsed as rich markup.
+    """
+    console.print("\n[bold]Generated password (shown once):[/bold]")
+    console.print(f"  {password}", style="green", markup=False, highlight=False)
+    console.print(
+        "[dim]Set this on the database account itself -- dbcreds only stores it.[/dim]"
+    )
 
 
 def version_callback(value: bool):
@@ -112,6 +131,12 @@ def add(
     description: Optional[str] = typer.Option(None, "--description", help="Environment description"),
     production: bool = typer.Option(False, "--production", help="Mark as production environment"),
     expires_days: int = typer.Option(90, "--expires-days", help="Password expiry in days"),
+    generate: bool = typer.Option(
+        False, "--generate", "-g", help="Generate a strong password instead of prompting"
+    ),
+    length: int = typer.Option(
+        DEFAULT_PASSWORD_LENGTH, "--length", help="Password length when using --generate"
+    ),
 ):
     """Add a new database environment."""
     console.print(f"\n[bold blue]Adding environment: {name}[/bold blue]")
@@ -149,12 +174,20 @@ def add(
         username = Prompt.ask("Username")
 
     # Get password securely
-    password = Prompt.ask("Password", password=True)
-    confirm_password = Prompt.ask("Confirm password", password=True)
+    if generate:
+        try:
+            password = generate_password(length)
+        except ValidationError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+        _show_generated_password(password)
+    else:
+        password = Prompt.ask("Password", password=True)
+        confirm_password = Prompt.ask("Confirm password", password=True)
 
-    if password != confirm_password:
-        console.print("[red]Passwords do not match![/red]")
-        raise typer.Exit(1)
+        if password != confirm_password:
+            console.print("[red]Passwords do not match![/red]")
+            raise typer.Exit(1)
 
     # Store credentials
     try:
@@ -309,6 +342,12 @@ def update(
     name: str = typer.Argument(..., help="Environment name"),
     password: bool = typer.Option(False, "--password", help="Update password only"),
     expires_days: Optional[int] = typer.Option(None, "--expires-days", help="Update password expiry"),
+    generate: bool = typer.Option(
+        False, "--generate", "-g", help="Rotate to a newly generated strong password"
+    ),
+    length: int = typer.Option(
+        DEFAULT_PASSWORD_LENGTH, "--length", help="Password length when using --generate"
+    ),
 ):
     """Update credentials for an environment."""
     manager = CredentialManager()
@@ -317,14 +356,20 @@ def update(
         # Get existing credentials
         creds = manager.get_credentials(name, check_expiry=False)
 
-        if password:
-            # Update password only
-            new_password = Prompt.ask("New password", password=True)
-            confirm_password = Prompt.ask("Confirm new password", password=True)
+        # --generate implies a password rotation, so it does not need --password too.
+        if password or generate:
+            if generate:
+                # A ValidationError here is reported by the handler below; catching
+                # it locally would print the message twice.
+                new_password = generate_password(length)
+                _show_generated_password(new_password)
+            else:
+                new_password = Prompt.ask("New password", password=True)
+                confirm_password = Prompt.ask("Confirm new password", password=True)
 
-            if new_password != confirm_password:
-                console.print("[red]Passwords do not match![/red]")
-                raise typer.Exit(1)
+                if new_password != confirm_password:
+                    console.print("[red]Passwords do not match![/red]")
+                    raise typer.Exit(1)
 
             manager.set_credentials(
                 name,
@@ -400,6 +445,71 @@ def check():
                 console.print(f"  - {name}: no expiry set")
         if len(healthy) > 5:
             console.print(f"  ... and {len(healthy) - 5} more")
+
+
+@app.command()
+def generate(
+    length: int = typer.Option(
+        DEFAULT_PASSWORD_LENGTH, "--length", "-l", help="Password length"
+    ),
+    uri_safe: bool = typer.Option(
+        True,
+        "--uri-safe/--no-uri-safe",
+        help="Restrict symbols to characters that are safe in a connection URI",
+    ),
+    copy: bool = typer.Option(
+        False, "--copy", "-c", help="Copy to clipboard instead of printing"
+    ),
+    clear_after: int = typer.Option(
+        45, "--clear-after", help="Seconds before the clipboard is cleared (0 = never)"
+    ),
+) -> None:
+    """Generate a strong random password."""
+    try:
+        password = generate_password(length, uri_safe=uri_safe)
+    except ValidationError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not copy:
+        # Unstyled so 'dbcreds generate | pbcopy' pipes the exact value.
+        typer.echo(password)
+        return
+
+    try:
+        from dbcreds.core.clipboard import SecureClipboard
+    except ImportError:
+        console.print(
+            "[red]Clipboard support requires the 'security' extra:[/red]\n"
+            "  uv tool install --editable . --with pyperclip"
+        )
+        raise typer.Exit(1)
+
+    clipboard = SecureClipboard()
+    # clear_after=0 leaves no background timer: this process owns the wait, and a
+    # daemon timer would die at exit without ever clearing.
+    if not clipboard.copy_sensitive(password, clear_after=0):
+        console.print("[red]Failed to copy to clipboard.[/red]")
+        raise typer.Exit(1)
+
+    if clear_after <= 0:
+        console.print(
+            "✅ Password copied to clipboard.\n"
+            "[yellow]It will stay there until you overwrite it.[/yellow]"
+        )
+        return
+
+    console.print(f"✅ Password copied to clipboard (clears in {clear_after}s).")
+    try:
+        with console.status(
+            f"Clearing clipboard in {clear_after}s... (Ctrl-C to clear now)"
+        ):
+            time.sleep(clear_after)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        clipboard.clear_clipboard(restore_original=True)
+    console.print("🧹 Clipboard cleared.")
 
 
 @app.command()
