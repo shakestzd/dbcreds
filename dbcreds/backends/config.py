@@ -24,6 +24,10 @@ class ConfigFileBackend(CredentialBackend):
     This backend should not be used for storing passwords directly.
     """
 
+    # Passwords are deliberately stripped before saving, so this backend can
+    # never return one from get_credential(). See CredentialBackend.
+    stores_secrets = False
+
     def __init__(self, config_dir: Optional[str] = None):
         """
         Initialize the config file backend.

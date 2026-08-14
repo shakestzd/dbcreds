@@ -10,6 +10,20 @@ from dbcreds.core.manager import CredentialManager
 from dbcreds.web.main import app
 
 
+@pytest.fixture(autouse=True)
+def reset_manager_singleton():
+    """
+    Reset the CredentialManager singleton around every test.
+
+    CredentialManager caches a single instance, so without this the first test
+    to build one pins its config_dir and leaks its environments into every
+    later test.
+    """
+    CredentialManager._instance = None
+    yield
+    CredentialManager._instance = None
+
+
 @pytest.fixture
 def temp_config_dir():
     """Create a temporary configuration directory."""

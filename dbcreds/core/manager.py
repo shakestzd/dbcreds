@@ -8,7 +8,7 @@ credential storage and retrieval across different backends.
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Tuple, Type
 
 # Lazy imports to speed up module loading
 _logger = None
@@ -314,10 +314,15 @@ class CredentialManager:
             password_expires_at=password_expires_at,
         )
 
-        # Store in backends
-        stored = False
+        # Store in backends. Metadata-only backends (e.g. ConfigFileBackend) are
+        # still written to, but they must never be mistaken for the password
+        # having been saved -- they strip it. Only a backend that durably
+        # round-trips the secret counts as a real store.
+        secret_stored = False
+        metadata_only_stored = []
         _get_logger().debug(f"Storing credentials for {env_name} (dates updated)")
         for backend in self.backends:
+            backend_name = backend.__class__.__name__
             try:
                 # Prepare metadata without username/password/environment (they're passed separately)
                 # Use model_dump with mode='json' to convert datetime objects to ISO strings
@@ -328,13 +333,28 @@ class CredentialManager:
                 if backend.set_credential(
                     f"dbcreds:{env_name}", username, password, metadata
                 ):
-                    stored = True
-                    _get_logger().debug(f"Successfully stored credentials in {backend.__class__.__name__}")
+                    if getattr(backend, "stores_secrets", True):
+                        secret_stored = True
+                        _get_logger().debug(f"Successfully stored credentials in {backend_name}")
+                    else:
+                        metadata_only_stored.append(backend_name)
+                        _get_logger().debug(f"Stored metadata only in {backend_name}")
             except Exception as e:
-                _get_logger().debug(f"Failed to store in {backend.__class__.__name__}: {e}")
+                _get_logger().debug(f"Failed to store in {backend_name}: {e}")
 
-        if not stored:
-            raise CredentialError("Failed to store credentials in any backend")
+        if not secret_stored:
+            available = ", ".join(b.__class__.__name__ for b in self.backends) or "none"
+            detail = (
+                f" Only metadata-only backends accepted it ({', '.join(metadata_only_stored)}), "
+                "which do not store passwords."
+                if metadata_only_stored
+                else ""
+            )
+            raise CredentialError(
+                f"Failed to store the password for environment '{env_name}': no secure "
+                f"credential store accepted it.{detail} Available backends: {available}. "
+                "Run 'dbcreds backends' to diagnose, then retry -- the credential was NOT saved."
+            )
 
         _get_logger().info(f"Stored credentials for environment: {env_name}")
         return creds
@@ -393,6 +413,10 @@ class CredentialManager:
                         f"Retrieved credentials from {backend.__class__.__name__}"
                     )
                     return creds
+            except PasswordExpiredError:
+                # An expired password is a found credential, not a missing one --
+                # don't let the fallback loop mask it as "not found".
+                raise
             except Exception as e:
                 _get_logger().debug(f"Failed to get from {backend.__class__.__name__}: {e}")
 
@@ -414,6 +438,49 @@ class CredentialManager:
         """
         self._ensure_initialized()
         return list(self.environments.values())
+
+    def get_active_backend_name(self) -> Optional[str]:
+        """
+        Return the name of the backend that will actually store passwords.
+
+        This is the first available backend that durably round-trips secrets --
+        the one a new credential's password would be written to and later read
+        back from. Metadata-only backends (e.g. ConfigFileBackend) are ignored.
+
+        Returns:
+            Backend class name, or None if no secret-capable backend is available
+
+        Examples:
+            >>> manager.get_active_backend_name()
+            'KeyringBackend'
+        """
+        self._ensure_initialized()
+
+        for backend in self.backends:
+            if getattr(backend, "stores_secrets", True):
+                return str(backend.__class__.__name__)
+        return None
+
+    def list_backends(self) -> List[Tuple[str, bool]]:
+        """
+        List available backends and whether each one stores secrets.
+
+        Returns:
+            List of (backend_name, stores_secrets) tuples, in priority order
+
+        Examples:
+            >>> manager.list_backends()
+            [('KeyringBackend', True), ('ConfigFileBackend', False)]
+        """
+        self._ensure_initialized()
+
+        return [
+            (
+                str(backend.__class__.__name__),
+                bool(getattr(backend, "stores_secrets", True)),
+            )
+            for backend in self.backends
+        ]
 
     def test_connection(self, environment: str) -> bool:
         """

@@ -16,7 +16,17 @@ class CredentialBackend(ABC):
 
     All credential backends must inherit from this class and implement
     the required methods.
+
+    Attributes:
+        stores_secrets: Whether this backend durably round-trips the password,
+            i.e. a later ``get_credential()`` in a new process returns the same
+            secret that ``set_credential()`` was given. Backends that only
+            persist metadata, or that keep the secret in process-local state,
+            must set this to False so callers do not mistake their success for
+            the credential actually having been saved.
     """
+
+    stores_secrets: bool = True
 
     @abstractmethod
     def is_available(self) -> bool:

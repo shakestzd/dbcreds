@@ -171,3 +171,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Editor/script backups -- never commit these
+*.backup.*
+backup_*/
+
+# Machine-local Claude Code settings (shared settings.json stays tracked)
+.claude/settings.local.json

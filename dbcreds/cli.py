@@ -389,6 +389,41 @@ def check():
 
 
 @app.command()
+def backends() -> None:
+    """Show which credential backends are active and which one stores passwords."""
+    manager = CredentialManager()
+    available = manager.list_backends()
+
+    if not available:
+        console.print("[bold red]No credential backends available![/bold red]")
+        raise typer.Exit(1)
+
+    table = Table(title="Credential Backends", box=box.ROUNDED)
+    table.add_column("Priority", justify="right", style="dim")
+    table.add_column("Backend", style="cyan")
+    table.add_column("Stores passwords", justify="center")
+
+    for position, (name, stores_secrets) in enumerate(available, start=1):
+        table.add_row(
+            str(position),
+            name,
+            "[green]yes[/green]" if stores_secrets else "[yellow]no (metadata only)[/yellow]",
+        )
+
+    console.print(table)
+
+    active = manager.get_active_backend_name()
+    if active:
+        console.print(f"\n✅ Passwords will be stored in: [bold green]{active}[/bold green]")
+    else:
+        console.print(
+            "\n[bold red]⚠️  No secure credential store is available.[/bold red]\n"
+            "Saving credentials will fail rather than silently drop the password."
+        )
+        raise typer.Exit(1)
+
+
+@app.command()
 def export(
     name: str = typer.Argument(..., help="Environment name"),
     format: str = typer.Option("uri", "--format", "-f", help="Export format (uri, env, json)"),

@@ -28,6 +28,12 @@ class EnvironmentBackend(CredentialBackend):
         DBCREDS_DEV_PASSWORD=mypass
     """
 
+    # set_credential() only mutates os.environ for the current process, so the
+    # secret is gone once that process exits. This backend is a read path for
+    # externally-provided credentials, not durable storage. See
+    # CredentialBackend.
+    stores_secrets = False
+
     def is_available(self) -> bool:
         """Environment variables are always available."""
         return True

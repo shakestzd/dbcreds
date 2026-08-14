@@ -41,6 +41,43 @@ class MockBackend(CredentialBackend):
         return False
 
 
+class MetadataOnlyBackend(CredentialBackend):
+    """
+    Backend that accepts writes but drops the password.
+
+    Mirrors ConfigFileBackend: set_credential() reports success while
+    deliberately discarding the secret, so get_credential() can only ever
+    hand back an empty password.
+    """
+
+    stores_secrets = False
+
+    def __init__(self):
+        self.storage = {}
+
+    def is_available(self) -> bool:
+        return True
+
+    def get_credential(self, key: str):
+        if key in self.storage:
+            username, metadata = self.storage[key]
+            return (username, "", metadata)
+        return None
+
+    def set_credential(
+        self, key: str, username: str, password: str, metadata: dict
+    ) -> bool:
+        # Password intentionally not persisted -- this is the whole point.
+        self.storage[key] = (username, metadata)
+        return True
+
+    def delete_credential(self, key: str) -> bool:
+        if key in self.storage:
+            del self.storage[key]
+            return True
+        return False
+
+
 @pytest.fixture
 def temp_config_dir():
     """Create a temporary config directory."""
@@ -54,16 +91,24 @@ def mock_backend():
     return MockBackend()
 
 
+def _manager_with_backends(config_dir, backends):
+    """
+    Build a CredentialManager backed only by the given backends.
+
+    Initialization is forced first: backends are set up lazily on first use, so
+    assigning the list beforehand would just get the real system backends
+    appended to it -- including the live keyring.
+    """
+    manager = CredentialManager(config_dir=config_dir)
+    manager._ensure_initialized()
+    manager.backends = list(backends)
+    return manager
+
+
 @pytest.fixture
 def manager(temp_config_dir, mock_backend):
     """Create a CredentialManager with mocked backends."""
-    # Create manager with temp config dir
-    manager = CredentialManager(config_dir=temp_config_dir)
-    # Clear any backends that were auto-initialized
-    manager.backends = []
-    # Add only our mock backend
-    manager.backends.append(mock_backend)
-    return manager
+    return _manager_with_backends(temp_config_dir, [mock_backend])
 
 
 @pytest.fixture
@@ -205,3 +250,86 @@ class TestCredentialManager:
         # Check production flag
         prod_env = next(env for env in envs if env.name == "prod")
         assert prod_env.is_production
+
+
+class TestSecretCapableBackendRequired:
+    """Regression tests: a metadata-only backend must not be reported as success."""
+
+    @pytest.fixture
+    def metadata_only_manager(self, temp_config_dir):
+        """Manager whose only available backend cannot store passwords."""
+        return _manager_with_backends(temp_config_dir, [MetadataOnlyBackend()])
+
+    def test_set_credentials_raises_when_no_secret_capable_backend(
+        self, metadata_only_manager, sample_credentials
+    ):
+        """
+        Storing must fail loudly when only a metadata-only backend is available.
+
+        Previously any backend returning True marked the write as successful, so
+        ConfigFileBackend -- which strips the password by design -- made
+        set_credentials() report success while the password was unrecoverable.
+        """
+        metadata_only_manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        with pytest.raises(CredentialError) as exc_info:
+            metadata_only_manager.set_credentials("test-env", **sample_credentials)
+
+        message = str(exc_info.value)
+        assert "was NOT saved" in message
+        assert "MetadataOnlyBackend" in message
+
+    def test_password_is_not_silently_empty_after_failure(
+        self, metadata_only_manager, sample_credentials
+    ):
+        """The failure must surface at write time, not as an empty password later."""
+        metadata_only_manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        with pytest.raises(CredentialError):
+            metadata_only_manager.set_credentials("test-env", **sample_credentials)
+
+        # Demonstrate what the old behaviour would have handed back: the metadata
+        # backend does retain a record, but with no usable password.
+        _, password, _ = metadata_only_manager.backends[0].get_credential(
+            "dbcreds:test-env"
+        )
+        assert password == ""
+
+    def test_set_credentials_succeeds_with_secret_capable_backend(
+        self, manager, sample_credentials
+    ):
+        """A secret-capable backend alongside a metadata-only one still succeeds."""
+        manager.backends.append(MetadataOnlyBackend())
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        creds = manager.set_credentials("test-env", **sample_credentials)
+
+        assert creds.password.get_secret_value() == sample_credentials["password"]
+
+    def test_get_active_backend_name(self, manager):
+        """The active backend is the first one that can store passwords."""
+        manager.backends.insert(0, MetadataOnlyBackend())
+
+        assert manager.get_active_backend_name() == "MockBackend"
+
+    def test_get_active_backend_name_is_none_without_secret_store(
+        self, metadata_only_manager
+    ):
+        """No secret-capable backend means no active backend to trust."""
+        assert metadata_only_manager.get_active_backend_name() is None
+
+    def test_list_backends_reports_capability(self, metadata_only_manager):
+        """Backend listing exposes the stores_secrets capability."""
+        assert metadata_only_manager.list_backends() == [("MetadataOnlyBackend", False)]
+
+    def test_config_file_backend_is_not_secret_capable(self):
+        """ConfigFileBackend must declare that it cannot store passwords."""
+        from dbcreds.backends.config import ConfigFileBackend
+
+        assert ConfigFileBackend.stores_secrets is False
+
+    def test_keyring_backend_is_secret_capable(self):
+        """KeyringBackend is the real credential store and must count."""
+        from dbcreds.backends.keyring import KeyringBackend
+
+        assert KeyringBackend.stores_secrets is True
