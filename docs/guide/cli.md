@@ -86,6 +86,57 @@ Only the options you pass are changed; the password, expiry policy, connection
 options and every unmentioned field are preserved. `dbcreds update dev` with no
 options changes nothing and exits non-zero.
 
+### Use 1Password as the Store
+
+dbcreds manages credentials; it does not have to hold them. With the
+[1Password CLI](https://developer.1password.com/docs/cli/) installed, the
+`OnePasswordBackend` takes priority over the local keyring, so the secret stays
+in one shared, auditable place rather than being copied onto each machine.
+
+```bash
+export DBCREDS_OP_VAULT="MyVault"
+export DBCREDS_OP_ITEM_TITLE="Doris {env}"   # default: dbcreds:{env}
+
+dbcreds backends        # confirm OnePasswordBackend is first
+```
+
+`DBCREDS_OP_ITEM_TITLE` is what lets dbcreds adopt items that already exist
+under their own names. Register an environment against one without re-entering
+the password:
+
+```bash
+dbcreds add prod --type doris --link
+```
+
+`--link` reads host, port, database and username straight from the stored item
+instead of prompting. The secret is written to only the highest-priority
+secret-capable backend, so enabling 1Password does not leave a second copy in
+your keyring.
+
+### Rotate a Password
+
+```bash
+dbcreds rotate prod
+dbcreds rotate prod --length 48 --user-host '10.0.0.%'
+```
+
+This changes the password **on the database and in the store**, in that order:
+the database is updated first, verified, and only then recorded. If the store
+write fails, the database is rolled back, so the two can never disagree. If the
+stored password does not already work, the rotation is refused before anything
+is generated.
+
+Supported dialects and the statement each uses:
+
+| Type | Statement |
+|------|-----------|
+| `postgresql` | `ALTER USER "u" WITH PASSWORD '…'` |
+| `mysql` | `ALTER USER 'u'@'%' IDENTIFIED BY '…'` — MySQL 8 removed `PASSWORD()` |
+| `doris` | `SET PASSWORD FOR u@'%' = PASSWORD('…')` — Doris/Doris |
+
+`--user-host` sets the host part of the account identity for MySQL-family
+databases; PostgreSQL ignores it.
+
 ### Show Active Backends
 ```bash
 dbcreds backends

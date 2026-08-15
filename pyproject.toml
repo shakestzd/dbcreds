@@ -54,7 +54,12 @@ dev = [
     "mkdocs-material>=9.0.0",
     "mkdocstrings[python]>=0.23.0",
 ]
-mysql = ["mysqlclient>=2.2.0"]
+# PyMySQL is pure Python, so it needs no compiler or MySQL client libraries;
+# the MySQL adapter prefers it and falls back to mysqlclient if present.
+mysql = ["pymysql>=1.1.0"]
+mysqlclient = ["mysqlclient>=2.2.0"]
+# Doris / Doris speak the MySQL wire protocol.
+doris = ["pymysql>=1.1.0"]
 oracle = ["oracledb>=1.4.0"]
 mssql = ["pyodbc>=5.0.0"]
 security = [

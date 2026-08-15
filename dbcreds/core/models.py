@@ -18,6 +18,9 @@ class DatabaseType(str, Enum):
 
     POSTGRESQL = "postgresql"
     MYSQL = "mysql"
+    # Apache Doris / Doris. Speaks the MySQL wire protocol, but its password
+    # statement differs from MySQL 8, which removed PASSWORD().
+    DORIS = "doris"
     ORACLE = "oracle"
     MSSQL = "mssql"
     SQLITE = "sqlite"
@@ -92,6 +95,9 @@ class DatabaseCredentials(BaseModel):
     database: str
     username: str
     password: SecretStr
+    # Lets a credential describe its own dialect, so a connection string can be
+    # built without consulting the environment registry.
+    database_type: Optional[DatabaseType] = None
     options: Dict[str, Any] = Field(default_factory=dict)
     ssl_mode: Optional[str] = None
     password_updated_at: datetime = Field(
@@ -147,12 +153,24 @@ class DatabaseCredentials(BaseModel):
             >>> creds.get_connection_string(include_password=False)
             'postgresql://user@localhost:5432/mydb'
         """
-        # This would be implemented based on database type
-        # For now, return a PostgreSQL example
+        from urllib.parse import quote
+
+        from dbcreds.core.adapters import scheme_for
+
+        scheme = driver or scheme_for(self.database_type)
+
+        # Percent-encode: a credential that is legal in the database can still
+        # contain characters ('@', ':', '/') that change how the URI parses.
+        username = quote(self.username, safe="")
         password_part = (
-            f":{self.password.get_secret_value()}" if include_password else ""
+            f":{quote(self.password.get_secret_value(), safe='')}"
+            if include_password
+            else ""
         )
-        return f"postgresql://{self.username}{password_part}@{self.host}:{self.port}/{self.database}"
+        return (
+            f"{scheme}://{username}{password_part}"
+            f"@{self.host}:{self.port}/{self.database}"
+        )
 
     def is_password_expired(self) -> bool:
         """Check if the password has expired."""

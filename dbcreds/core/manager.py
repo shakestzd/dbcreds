@@ -8,7 +8,12 @@ credential storage and retrieval across different backends.
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type
+
+if TYPE_CHECKING:  # imports for annotations only; runtime stays lazy
+    from pydantic import SecretStr
+
+    from dbcreds.core.models import DatabaseType, Environment
 
 # Lazy imports to speed up module loading
 _logger = None
@@ -24,6 +29,26 @@ def _get_logger():
         from loguru import logger
         _logger = logger
     return _logger
+
+
+def _secret(value: str) -> "SecretStr":
+    """Wrap a plain string in a SecretStr."""
+    from pydantic import SecretStr
+
+    return SecretStr(value)
+
+
+def _expiry_window_days(creds) -> Optional[int]:
+    """
+    Recover an environment's configured expiry window, in days.
+
+    Lets a rotation keep the policy the environment already had instead of
+    silently resetting it to the default.
+    """
+    if creds.password_expires_at is None or creds.password_updated_at is None:
+        return None
+    window = creds.password_expires_at - creds.password_updated_at
+    return window.days if window.days > 0 else None
 
 
 def _load_models():
@@ -76,7 +101,7 @@ class CredentialManager:
 
         self.config_dir = config_dir or os.path.expanduser("~/.dbcreds")
         self.backends: List = []  # Avoid importing types
-        self.environments: Dict[str, object] = {}  # Avoid importing Environment
+        self.environments: Dict[str, "Environment"] = {}
 
         # Don't do anything heavy yet!
         self._initialized = True
@@ -114,6 +139,14 @@ class CredentialManager:
                 backend_classes.append(LegacyWindowsBackend)
             except ImportError:
                 pass
+
+        # 1Password first when present: it is a shared, auditable system of
+        # record, so it should win over a machine-local keyring.
+        try:
+            from dbcreds.backends.onepassword import OnePasswordBackend
+            backend_classes.append(OnePasswordBackend)
+        except ImportError:
+            pass
 
         # Cross-platform backends
         try:
@@ -301,9 +334,12 @@ class CredentialManager:
                 days=password_expires_days
             )
 
-        # Create credentials object
+        # Create credentials object. Recording the database type makes the
+        # stored record self-describing, so a connection string can be built
+        # without consulting the environment registry.
         creds = DatabaseCredentials(
             environment=env_name,
+            database_type=self.environments[env_name].database_type,
             host=host,
             port=port,
             database=database,
@@ -330,10 +366,21 @@ class CredentialManager:
                 metadata.pop('username', None)
                 metadata.pop('password', None)
                 metadata.pop('environment', None)
+                stores_secrets = getattr(backend, "stores_secrets", True)
+
+                # The secret goes to one store, not every store. Writing it to
+                # each secret-capable backend would scatter copies that then
+                # have to be rotated and revoked independently.
+                if stores_secrets and secret_stored:
+                    _get_logger().debug(
+                        f"Skipping {backend_name}: secret already stored elsewhere"
+                    )
+                    continue
+
                 if backend.set_credential(
                     f"dbcreds:{env_name}", username, password, metadata
                 ):
-                    if getattr(backend, "stores_secrets", True):
+                    if stores_secrets:
                         secret_stored = True
                         _get_logger().debug(f"Successfully stored credentials in {backend_name}")
                     else:
@@ -397,6 +444,14 @@ class CredentialManager:
                     username, password, metadata = result
                     # Remove 'environment' from metadata if it exists to avoid duplicate
                     metadata.pop('environment', None)
+
+                    # The environment registry is authoritative for the dialect:
+                    # a backend may not record it at all (keyring, env vars), or
+                    # may hold a stale value written by another tool.
+                    env = self.environments.get(env_name)
+                    if env is not None:
+                        metadata['database_type'] = env.database_type
+
                     creds = DatabaseCredentials(
                         environment=env_name,
                         username=username,
@@ -482,6 +537,133 @@ class CredentialManager:
             for backend in self.backends
         ]
 
+    def rotate_password(
+        self,
+        environment: str,
+        length: int = 32,
+        user_host: str = "%",
+    ) -> str:
+        """
+        Change an environment's password on the database and in the store.
+
+        The database is changed first and the store second. Reversing that order
+        is what allows an interrupted rotation to leave the store holding a
+        password the database never received -- which locks you out until the
+        old value is recovered from the store's history.
+
+        Args:
+            environment: Environment name
+            length: Length of the generated password
+            user_host: Host part of the account identity for MySQL-family
+                dialects, e.g. the '%' in dbuser@'%'
+
+        Returns:
+            The new password
+
+        Raises:
+            CredentialNotFoundError: If the environment or its credentials are missing
+            RotationError: If any step fails. Nothing is left changed unless the
+                error reports otherwise via its 'applied' attribute.
+
+        Examples:
+            >>> manager.rotate_password("prod")
+            'Yu4yr3JnHZEgrU2d78yi6gMTPC9lXAt5'
+        """
+        self._ensure_initialized()
+
+        from dbcreds.core.adapters import get_adapter
+        from dbcreds.core.exceptions import RotationError
+        from dbcreds.core.security import generate_password
+
+        env_name = environment.lower()
+        creds = self.get_credentials(env_name, check_expiry=False)
+        adapter = get_adapter(self._database_type_for(env_name, creds))
+
+        # Never start a rotation that cannot be finished: changing the password
+        # requires authenticating with the current one.
+        if not adapter.check_connection(creds):
+            raise RotationError(
+                f"The stored password for '{environment}' does not work against "
+                f"{creds.host}. Fix that before rotating, otherwise there is no "
+                "way to apply a new one."
+            )
+
+        current_password = creds.password.get_secret_value()
+        new_password = generate_password(length)
+
+        statement = adapter.password_change_statement(
+            creds.username, new_password, user_host=user_host
+        )
+        try:
+            adapter.execute(creds, statement)
+        except Exception as e:
+            raise RotationError(
+                f"Could not change the password on {creds.host}: {e}. Nothing changed."
+            ) from e
+
+        new_creds = creds.model_copy(deep=True)
+        new_creds.password = _secret(new_password)
+
+        if not adapter.check_connection(new_creds):
+            if adapter.check_connection(creds):
+                raise RotationError(
+                    f"{creds.host} did not accept the new password, and the old "
+                    "one still works. Nothing changed."
+                )
+            raise RotationError(
+                f"Cannot connect to {creds.host} with either password.",
+                new_password=new_password,
+                applied=True,
+            )
+
+        # Preserve the environment's expiry policy rather than resetting it.
+        expires_days = _expiry_window_days(creds)
+
+        try:
+            self.set_credentials(
+                env_name,
+                host=creds.host,
+                port=creds.port,
+                database=creds.database,
+                username=creds.username,
+                password=new_password,
+                password_expires_days=expires_days,
+                **creds.options,
+            )
+        except Exception as store_error:
+            # Put the database back, so the store stays the source of truth.
+            try:
+                rollback = adapter.password_change_statement(
+                    creds.username, current_password, user_host=user_host
+                )
+                adapter.execute(new_creds, rollback)
+                if adapter.check_connection(creds):
+                    raise RotationError(
+                        f"Could not save the new password ({store_error}). "
+                        "Rolled the database back; nothing changed."
+                    ) from store_error
+            except RotationError:
+                raise
+            except Exception:  # noqa: BLE001 -- rollback itself failed
+                pass
+
+            raise RotationError(
+                f"Could not save the new password ({store_error}) and could not "
+                "roll the database back.",
+                new_password=new_password,
+                applied=True,
+            ) from store_error
+
+        _get_logger().info(f"Rotated password for environment: {env_name}")
+        return new_password
+
+    def _database_type_for(self, env_name: str, creds=None) -> Optional["DatabaseType"]:
+        """Resolve an environment's database type, preferring the environment."""
+        env = self.environments.get(env_name.lower())
+        if env is not None:
+            return env.database_type
+        return getattr(creds, "database_type", None)
+
     def test_connection(self, environment: str) -> bool:
         """
         Test database connection for an environment.
@@ -497,28 +679,13 @@ class CredentialManager:
             ...     print("Connection successful!")
         """
         self._ensure_initialized()
-        
-        from dbcreds.core.models import DatabaseType
-        
+
+        from dbcreds.core.adapters import get_adapter
+
         try:
             creds = self.get_credentials(environment)
-            env = self.environments[environment.lower()]
-
-            # Import appropriate database driver
-            if env.database_type == DatabaseType.POSTGRESQL:
-                import psycopg2
-
-                conn = psycopg2.connect(
-                    host=creds.host,
-                    port=creds.port,
-                    database=creds.database,
-                    user=creds.username,
-                    password=creds.password.get_secret_value(),
-                )
-                conn.close()
-                return True
-            # Add other database types as needed
-
+            adapter = get_adapter(self._database_type_for(environment, creds))
+            return adapter.check_connection(creds)
         except Exception as e:
             _get_logger().error(f"Connection test failed for '{environment}': {e}")
             return False

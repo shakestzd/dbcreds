@@ -252,6 +252,78 @@ class TestCredentialManager:
         assert prod_env.is_production
 
 
+class TestDatabaseTypeResolution:
+    """
+    Credentials must know their dialect, whatever backend they came from.
+
+    A backend need not record the type at all -- keyring and env vars do not --
+    so the environment registry fills it in. Without this, get_connection_string()
+    silently falls back to postgresql:// for every database.
+    """
+
+    def test_type_is_filled_in_from_the_environment(self, manager, sample_credentials):
+        manager.add_environment("test-env", DatabaseType.MYSQL)
+        manager.set_credentials("test-env", **sample_credentials)
+
+        # Simulate a backend that stored nothing about the dialect.
+        username, password, metadata = manager.backends[0].storage["dbcreds:test-env"]
+        metadata.pop("database_type", None)
+        manager.backends[0].storage["dbcreds:test-env"] = (username, password, metadata)
+
+        creds = manager.get_credentials("test-env")
+
+        assert creds.database_type == DatabaseType.MYSQL
+        assert creds.get_connection_string().startswith("mysql+pymysql://")
+
+    def test_environment_wins_over_stale_stored_type(self, manager, sample_credentials):
+        """An out-of-date value written by another tool must not take over."""
+        manager.add_environment("test-env", DatabaseType.DORIS)
+        manager.set_credentials("test-env", **sample_credentials)
+
+        username, password, metadata = manager.backends[0].storage["dbcreds:test-env"]
+        metadata["database_type"] = "postgresql"
+        manager.backends[0].storage["dbcreds:test-env"] = (username, password, metadata)
+
+        assert manager.get_credentials("test-env").database_type == DatabaseType.DORIS
+
+    def test_type_is_recorded_on_write(self, manager, sample_credentials):
+        manager.add_environment("test-env", DatabaseType.DORIS)
+        manager.set_credentials("test-env", **sample_credentials)
+
+        _, _, metadata = manager.backends[0].storage["dbcreds:test-env"]
+        assert metadata["database_type"] == "doris"
+
+
+class TestSecretStoredOnce:
+    """The secret belongs in one store, not scattered across every backend."""
+
+    def test_only_the_first_secret_capable_backend_receives_it(
+        self, temp_config_dir, sample_credentials
+    ):
+        primary, secondary = MockBackend(), MockBackend()
+        manager = _manager_with_backends(temp_config_dir, [primary, secondary])
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        manager.set_credentials("test-env", **sample_credentials)
+
+        assert "dbcreds:test-env" in primary.storage
+        assert "dbcreds:test-env" not in secondary.storage
+
+    def test_metadata_backends_still_receive_the_record(
+        self, temp_config_dir, sample_credentials
+    ):
+        """Metadata-only backends are not secret stores, so they all get written."""
+        primary = MockBackend()
+        metadata_only = MetadataOnlyBackend()
+        manager = _manager_with_backends(temp_config_dir, [primary, metadata_only])
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        manager.set_credentials("test-env", **sample_credentials)
+
+        assert "dbcreds:test-env" in primary.storage
+        assert "dbcreds:test-env" in metadata_only.storage
+
+
 class TestSecretCapableBackendRequired:
     """Regression tests: a metadata-only backend must not be reported as success."""
 

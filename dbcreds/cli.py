@@ -23,6 +23,7 @@ from dbcreds import __version__
 from dbcreds.core.exceptions import (
     CredentialError,
     CredentialNotFoundError,
+    RotationError,
     ValidationError,
 )
 from dbcreds.core.manager import CredentialManager
@@ -154,6 +155,12 @@ def add(
     length: int = typer.Option(
         DEFAULT_PASSWORD_LENGTH, "--length", help="Password length when using --generate"
     ),
+    link: bool = typer.Option(
+        False,
+        "--link",
+        help="Register an environment whose credentials already exist in the "
+        "store (e.g. 1Password), instead of prompting for them",
+    ),
 ):
     """Add a new database environment."""
     console.print(f"\n[bold blue]Adding environment: {name}[/bold blue]")
@@ -173,6 +180,24 @@ def add(
         except CredentialError as e:
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(1)
+
+    # The secret is already in the store, so read it rather than asking for it.
+    if link:
+        try:
+            creds = manager.get_credentials(name, check_expiry=False)
+        except Exception as e:
+            console.print(f"[red]No existing credentials found for '{name}': {e}[/red]")
+            console.print(
+                "Check the store is reachable and the item name matches "
+                "(see DBCREDS_OP_ITEM_TITLE)."
+            )
+            raise typer.Exit(1)
+
+        console.print(
+            f"✅ Linked to existing credentials: [green]{creds.username}@"
+            f"{creds.host}:{creds.port}/{creds.database}[/green]"
+        )
+        return
 
     # Collect connection details
     if not host:
@@ -511,6 +536,58 @@ def check():
                 console.print(f"  - {name}: no expiry set")
         if len(healthy) > 5:
             console.print(f"  ... and {len(healthy) - 5} more")
+
+
+@app.command()
+def rotate(
+    name: str = typer.Argument(..., help="Environment name"),
+    length: int = typer.Option(
+        DEFAULT_PASSWORD_LENGTH, "--length", "-l", help="Generated password length"
+    ),
+    user_host: str = typer.Option(
+        "%",
+        "--user-host",
+        help="Host part of the account identity for MySQL-family databases, "
+        "e.g. the '%' in dbuser@'%'",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+) -> None:
+    """Change a password on the database and in the credential store."""
+    manager = CredentialManager()
+
+    if not yes:
+        console.print(
+            f"This changes the password for [bold]{name}[/bold] on the database "
+            "itself, not just in storage."
+        )
+        if not Confirm.ask("Continue?", default=False):
+            console.print("[yellow]Cancelled[/yellow]")
+            raise typer.Exit()
+
+    try:
+        with console.status(f"Rotating [bold]{name}[/bold]..."):
+            new_password = manager.rotate_password(
+                name, length=length, user_host=user_host
+            )
+    except CredentialNotFoundError:
+        console.print(f"[red]Environment '{name}' not found![/red]")
+        raise typer.Exit(1)
+    except RotationError as e:
+        console.print(f"[red]Rotation failed: {e}[/red]")
+        if e.applied and e.new_password:
+            # The database has this password and nothing else does.
+            console.print(
+                "\n[bold red]The database now uses the password below and this "
+                "is the ONLY copy. Save it before closing this terminal.[/bold red]"
+            )
+            console.print(f"  {e.new_password}", style="yellow", markup=False, highlight=False)
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"✅ [green]Rotated '{name}' -- database and store now agree.[/green]")
+    _show_generated_password(new_password)
 
 
 @app.command()
