@@ -73,8 +73,31 @@ def fake_op(monkeypatch):
 class TestItemTitle:
     """The title template is how existing items get reused."""
 
-    def test_default_template(self):
-        assert OnePasswordBackend().item_title("dbcreds:prod") == "dbcreds:prod"
+    def test_default_template_is_the_environment_name(self):
+        assert OnePasswordBackend().item_title("dbcreds:prod") == "prod"
+
+    @pytest.mark.parametrize("env", ["prod", "warehouse-prod", "analytics_stage"])
+    def test_default_title_is_valid_in_a_secret_reference(self, env):
+        """
+        Titles must be addressable as op://vault/item/field.
+
+        ':' and '/' are structural in a secret reference, so a title containing
+        one cannot be read with `op read` or `op run` -- which is how everything
+        other than dbcreds itself gets at the secret. A 'dbcreds:{env}' default
+        looks tidy and breaks exactly that.
+        """
+        title = OnePasswordBackend().item_title(f"dbcreds:{env}")
+
+        assert ":" not in title
+        assert "/" not in title
+
+    def test_warns_when_template_breaks_secret_references(self, caplog):
+        """A custom template that is unusable with op read should say so."""
+        backend = OnePasswordBackend(title_template="dbcreds:{env}")
+
+        title = backend.item_title("dbcreds:prod")
+
+        assert title == "dbcreds:prod"  # honoured, but flagged
 
     def test_custom_template(self):
         backend = OnePasswordBackend(title_template="Doris {env}")
@@ -120,7 +143,7 @@ class TestAvailability:
 
 class TestGetCredential:
     def test_maps_native_fields(self, fake_op):
-        fake_op.items["dbcreds:prod"] = item([
+        fake_op.items["prod"] = item([
             {"id": "username", "label": "username", "value": "dbuser"},
             {"id": "password", "label": "password", "value": SECRET},
             {"id": "hostname", "label": "server", "value": "db.example.internal"},
@@ -138,7 +161,7 @@ class TestGetCredential:
 
     def test_merges_sidecar_metadata(self, fake_op):
         """Fields with no native home ride along as JSON."""
-        fake_op.items["dbcreds:prod"] = item([
+        fake_op.items["prod"] = item([
             {"id": "username", "label": "username", "value": "dbuser"},
             {"id": "password", "label": "password", "value": SECRET},
             {"id": "x", "label": "dbcreds_metadata",
@@ -154,7 +177,7 @@ class TestGetCredential:
 
     def test_item_without_password_returns_none(self, fake_op):
         """A metadata-only item is not a usable credential."""
-        fake_op.items["dbcreds:prod"] = item([
+        fake_op.items["prod"] = item([
             {"id": "username", "label": "username", "value": "dbuser"},
         ])
 
@@ -162,7 +185,7 @@ class TestGetCredential:
 
     def test_malformed_sidecar_is_ignored(self, fake_op):
         """Bad JSON in the sidecar must not lose the credential itself."""
-        fake_op.items["dbcreds:prod"] = item([
+        fake_op.items["prod"] = item([
             {"id": "username", "label": "username", "value": "dbuser"},
             {"id": "password", "label": "password", "value": SECRET},
             {"id": "x", "label": "dbcreds_metadata", "value": "{not json"},
@@ -182,7 +205,7 @@ class TestSetCredential:
             "dbcreds:prod", "dbuser", SECRET, dict(self.METADATA)
         ) is True
 
-        stored = fake_op.items["dbcreds:prod"]
+        stored = fake_op.items["prod"]
         values = {f["label"]: f["value"] for f in stored["fields"]}
         assert values["username"] == "dbuser"
         assert values["password"] == SECRET
@@ -195,7 +218,7 @@ class TestSetCredential:
             "dbcreds:prod", "dbuser", SECRET, dict(self.METADATA)
         )
 
-        values = {f["label"]: f["value"] for f in fake_op.items["dbcreds:prod"]["fields"]}
+        values = {f["label"]: f["value"] for f in fake_op.items["prod"]["fields"]}
         assert json.loads(values["dbcreds_metadata"])["password_expires_at"]
 
     def test_round_trips(self, fake_op):
@@ -226,7 +249,7 @@ class TestSetCredential:
              "database_type": DatabaseType.DORIS},
         )
 
-        fields = {f["label"]: f for f in fake_op.items["dbcreds:prod"]["fields"]}
+        fields = {f["label"]: f for f in fake_op.items["prod"]["fields"]}
         # Written as the item's native MENU field, not buried in the sidecar.
         assert fields["type"]["value"] == "doris"
         assert fields["type"]["type"] == "MENU"
@@ -242,12 +265,12 @@ class TestSetCredential:
             "dbcreds:prod", "dbuser", SECRET, {"host": "db.example.internal"}
         )
 
-        fields = {f["label"]: f for f in fake_op.items["dbcreds:prod"]["fields"]}
+        fields = {f["label"]: f for f in fake_op.items["prod"]["fields"]}
         assert fields["server"]["id"] == "hostname"
 
     def test_updates_existing_item_preserving_other_fields(self, fake_op):
         """A partial update must not drop fields dbcreds does not manage."""
-        fake_op.items["dbcreds:prod"] = item([
+        fake_op.items["prod"] = item([
             {"id": "username", "label": "username", "value": "dbuser"},
             {"id": "password", "label": "password", "value": "old"},
             {"id": "notesPlain", "label": "notesPlain", "value": "hand-written note"},
@@ -257,7 +280,7 @@ class TestSetCredential:
             "dbcreds:prod", "dbuser", "new-secret", {"host": "h", "port": 1, "database": "d"}
         )
 
-        values = {f["label"]: f["value"] for f in fake_op.items["dbcreds:prod"]["fields"]}
+        values = {f["label"]: f["value"] for f in fake_op.items["prod"]["fields"]}
         assert values["password"] == "new-secret"
         assert values["notesPlain"] == "hand-written note"
 
@@ -278,10 +301,10 @@ class TestSetCredential:
 
 class TestDeleteCredential:
     def test_deletes(self, fake_op):
-        fake_op.items["dbcreds:prod"] = item([])
+        fake_op.items["prod"] = item([])
 
         assert OnePasswordBackend().delete_credential("dbcreds:prod") is True
-        assert "dbcreds:prod" not in fake_op.items
+        assert "prod" not in fake_op.items
 
     def test_missing_item_is_false(self, fake_op):
         assert OnePasswordBackend().delete_credential("dbcreds:nope") is False

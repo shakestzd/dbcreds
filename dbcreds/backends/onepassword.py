@@ -50,7 +50,14 @@ _META_TO_FIELD = {
 # clobbered.
 _METADATA_FIELD = "dbcreds_metadata"
 
-_DEFAULT_TITLE_TEMPLATE = "dbcreds:{env}"
+# Item title defaults to the environment name itself. It deliberately adds no
+# 'dbcreds:' prefix: ':' is a structural character in op:// secret references,
+# so a title containing one cannot be read with `op read` or `op run` at all --
+# which is how most things other than dbcreds consume the secret.
+_DEFAULT_TITLE_TEMPLATE = "{env}"
+
+# Characters that would make a title unusable in an op:// secret reference.
+_REFERENCE_UNSAFE = ":/"
 
 
 class OnePasswordBackend(CredentialBackend):
@@ -130,7 +137,15 @@ class OnePasswordBackend(CredentialBackend):
             'Doris prod'
         """
         environment = key.split(":", 1)[1] if ":" in key else key
-        return self.title_template.format(env=environment)
+        title = self.title_template.format(env=environment)
+
+        if any(char in title for char in _REFERENCE_UNSAFE):
+            logger.warning(
+                f"1Password item title '{title}' contains a character that is "
+                "not valid in an op:// secret reference, so `op read` and "
+                "`op run` cannot address this item."
+            )
+        return title
 
     # -- CredentialBackend ------------------------------------------------
 
