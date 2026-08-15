@@ -97,6 +97,12 @@ class CredentialManager:
         """
         # Only initialize once
         if self._initialized:
+            if config_dir and config_dir != self.config_dir:
+                _get_logger().warning(
+                    f"CredentialManager already initialized with config_dir="
+                    f"{self.config_dir!r}; ignoring {config_dir!r}. It is a "
+                    "singleton, so the first caller wins."
+                )
             return
 
         self.config_dir = config_dir or os.path.expanduser("~/.dbcreds")
@@ -246,30 +252,44 @@ class CredentialManager:
         _get_logger().info(f"Added environment: {env.name}")
         return env
 
-    def remove_environment(self, name: str) -> None:
+    def remove_environment(self, name: str, delete_credentials: bool = False) -> None:
         """
-        Remove an environment and its credentials.
+        Unregister an environment, optionally deleting its stored credential.
+
+        The credential is kept by default. The store may be shared and
+        externally owned -- deleting a 1Password item removes it, and its
+        history, for everyone with access -- so discarding dbcreds' local view
+        of an environment must not reach into it uninvited.
 
         Args:
             name: Environment name to remove
+            delete_credentials: Also delete the credential from every backend
 
         Raises:
             CredentialNotFoundError: If environment doesn't exist
+
+        Examples:
+            >>> manager.remove_environment("old-env")
+            >>> manager.remove_environment("old-env", delete_credentials=True)
         """
         self._ensure_initialized()
-        
+
         from dbcreds.core.exceptions import CredentialNotFoundError
-        
+
         env_name = name.lower()
         if env_name not in self.environments:
             raise CredentialNotFoundError(f"Environment '{name}' not found")
 
-        # Remove credentials from all backends
-        for backend in self.backends:
-            try:
-                backend.delete_credential(f"dbcreds:{env_name}")
-            except Exception as e:
-                _get_logger().debug(f"Failed to delete from {backend.__class__.__name__}: {e}")
+        if delete_credentials:
+            for backend in self.backends:
+                try:
+                    backend.delete_credential(f"dbcreds:{env_name}")
+                except Exception as e:
+                    _get_logger().debug(f"Failed to delete from {backend.__class__.__name__}: {e}")
+        else:
+            _get_logger().debug(
+                f"Leaving stored credentials for {env_name} in place"
+            )
 
         del self.environments[env_name]
         self._save_environments()
@@ -286,6 +306,7 @@ class CredentialManager:
         password: str,
         password_expires_days: Optional[int] = 90,
         password_updated_at: Optional[datetime] = None,
+        ssl_mode: Optional[str] = None,
         **options,
     ):
         """
@@ -346,6 +367,7 @@ class CredentialManager:
             username=username,
             password=password,
             options=options,
+            ssl_mode=ssl_mode,
             password_updated_at=password_updated_at,
             password_expires_at=password_expires_at,
         )
@@ -628,6 +650,7 @@ class CredentialManager:
                 username=creds.username,
                 password=new_password,
                 password_expires_days=expires_days,
+                ssl_mode=creds.ssl_mode,
                 **creds.options,
             )
         except Exception as store_error:

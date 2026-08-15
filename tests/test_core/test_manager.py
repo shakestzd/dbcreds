@@ -252,6 +252,74 @@ class TestCredentialManager:
         assert prod_env.is_production
 
 
+class TestRemoveEnvironment:
+    """
+    Unregistering must not reach into the credential store uninvited.
+
+    The store may be shared and externally owned: deleting a 1Password item
+    removes it, and its history, for everyone with access.
+    """
+
+    def test_credentials_are_kept_by_default(self, manager, sample_credentials):
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+        manager.set_credentials("test-env", **sample_credentials)
+
+        manager.remove_environment("test-env")
+
+        assert "test-env" not in manager.environments
+        assert "dbcreds:test-env" in manager.backends[0].storage
+
+    def test_credentials_are_deleted_when_asked(self, manager, sample_credentials):
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+        manager.set_credentials("test-env", **sample_credentials)
+
+        manager.remove_environment("test-env", delete_credentials=True)
+
+        assert "test-env" not in manager.environments
+        assert "dbcreds:test-env" not in manager.backends[0].storage
+
+    def test_unknown_environment_still_raises(self, manager):
+        with pytest.raises(CredentialNotFoundError):
+            manager.remove_environment("nonexistent")
+
+
+class TestSslModeSurvives:
+    """ssl_mode has no set_credentials parameter, so rewrites used to drop it."""
+
+    def test_round_trips(self, manager, sample_credentials):
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+        manager.set_credentials("test-env", **sample_credentials, ssl_mode="require")
+
+        assert manager.get_credentials("test-env").ssl_mode == "require"
+
+    def test_not_swallowed_into_options(self, manager, sample_credentials):
+        """It is a first-class field, not a connection option."""
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+        manager.set_credentials("test-env", **sample_credentials, ssl_mode="require")
+
+        creds = manager.get_credentials("test-env")
+        assert "ssl_mode" not in creds.options
+
+
+class TestSingletonConfigDir:
+    """A singleton that silently ignores a different config_dir is a trap."""
+
+    def test_warns_when_config_dir_is_ignored(self, temp_config_dir, caplog):
+        CredentialManager(config_dir=temp_config_dir)
+
+        with caplog.at_level("WARNING"):
+            second = CredentialManager(config_dir="/somewhere/else")
+
+        assert second.config_dir == temp_config_dir
+
+    def test_no_warning_when_config_dir_matches(self, temp_config_dir):
+        first = CredentialManager(config_dir=temp_config_dir)
+        second = CredentialManager(config_dir=temp_config_dir)
+
+        assert first is second
+        assert second.config_dir == temp_config_dir
+
+
 class TestDatabaseTypeResolution:
     """
     Credentials must know their dialect, whatever backend they came from.

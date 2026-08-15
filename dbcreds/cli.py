@@ -359,18 +359,41 @@ def test(
 def remove(
     name: str = typer.Argument(..., help="Environment name"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    delete_credentials: bool = typer.Option(
+        False,
+        "--delete-credentials",
+        help="Also delete the stored password from the credential store",
+    ),
 ):
-    """Remove an environment and its credentials."""
+    """Unregister an environment, keeping its stored password by default."""
+    manager = CredentialManager()
+
     if not force:
-        if not Confirm.ask(f"Are you sure you want to remove environment '{name}'?"):
+        if delete_credentials:
+            store = manager.get_active_backend_name() or "the credential store"
+            console.print(
+                f"This deletes the stored password for [bold]{name}[/bold] from "
+                f"[bold]{store}[/bold]. If that store is shared, it disappears "
+                "for everyone with access, along with its history."
+            )
+        else:
+            console.print(
+                f"This unregisters [bold]{name}[/bold] from dbcreds. The stored "
+                "password is left untouched."
+            )
+        if not Confirm.ask("Continue?", default=not delete_credentials):
             console.print("[yellow]Cancelled[/yellow]")
             raise typer.Exit()
 
-    manager = CredentialManager()
-
     try:
-        manager.remove_environment(name)
-        console.print(f"✅ [green]Environment '{name}' removed successfully![/green]")
+        manager.remove_environment(name, delete_credentials=delete_credentials)
+        if delete_credentials:
+            console.print(f"✅ [green]Environment '{name}' and its password removed[/green]")
+        else:
+            console.print(
+                f"✅ [green]Environment '{name}' unregistered[/green] "
+                "(stored password kept)"
+            )
     except CredentialNotFoundError:
         console.print(f"[red]Environment '{name}' not found![/red]")
         raise typer.Exit(1)
@@ -465,6 +488,7 @@ def update(
             password_updated_at=password_updated_at,
             # Preserved explicitly; set_credentials rebuilds the record from
             # scratch, so anything not passed back in is dropped.
+            ssl_mode=creds.ssl_mode,
             **creds.options,
         )
 
