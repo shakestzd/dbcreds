@@ -126,6 +126,7 @@ markdown_extensions:
 # Page tree
 nav:
   - Home: index.md
+  - Architecture: architecture.md
   - Getting Started:
       - Quickstart: getting-started/quickstart.md
       - Installation: getting-started/installation.md
@@ -147,6 +148,7 @@ nav:
   - Security:
       - Backend Security: security/backends.md
       - Best Practices: security/best-practices.md
+      - Rotation & External Stores: security/rotation-and-external-stores.md
   - API Reference:
       - Core: api/core.md
       - Backends: api/backends.md

@@ -58,7 +58,7 @@ dev = [
 # the MySQL adapter prefers it and falls back to mysqlclient if present.
 mysql = ["pymysql>=1.1.0"]
 mysqlclient = ["mysqlclient>=2.2.0"]
-# Doris / Doris speak the MySQL wire protocol.
+# Doris (and Doris-compatible warehouses) speak the MySQL wire protocol.
 doris = ["pymysql>=1.1.0"]
 oracle = ["oracledb>=1.4.0"]
 mssql = ["pyodbc>=5.0.0"]
