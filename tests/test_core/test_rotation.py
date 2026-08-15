@@ -215,6 +215,42 @@ class TestRotationFailsSafely:
         assert rotation_env.stored_password() == ORIGINAL_PASSWORD
 
 
+class ShadowingStore(StoreBackend):
+    """
+    A store that accepts writes but keeps returning the old value.
+
+    Models a real failure seen in the field: the primary backend rejected the
+    write, a secondary accepted it, and reads kept hitting the stale primary --
+    so the rotation reported success while every reader got the old password.
+    """
+
+    def set_credential(self, key, username, password, metadata) -> bool:
+        if key in self.storage:
+            stale_username, stale_password, _ = self.storage[key]
+            self.storage[key] = (stale_username, stale_password, metadata)
+            return True
+        return super().set_credential(key, username, password, metadata)
+
+
+class TestStoreReadBackIsVerified:
+    """A write reporting success is not proof the store returns the new value."""
+
+    def test_shadowed_write_is_detected_and_rolled_back(self, rotation_env):
+        rotation_env.manager.backends = [ShadowingStore()]
+        # Seed the shadowing store with the current credential.
+        rotation_env.manager.backends[0].storage["dbcreds:prod"] = (
+            "dbuser", ORIGINAL_PASSWORD,
+            {"host": "db.example.internal", "port": 9030, "database": "analytics"},
+        )
+
+        with pytest.raises(RotationError, match="shadowing"):
+            rotation_env.manager.rotate_password("prod")
+
+        # The database must be put back, since the store never took the change.
+        assert rotation_env.server.password == ORIGINAL_PASSWORD
+        assert rotation_env.stored_password() == ORIGINAL_PASSWORD
+
+
 class TestUnrecoverableRotation:
     """
     The one case where state is genuinely lost.

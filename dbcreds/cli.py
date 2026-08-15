@@ -575,6 +575,9 @@ def rotate(
         "e.g. the '%' in dbuser@'%'",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+    show: bool = typer.Option(
+        False, "--show", help="Print the new password instead of asking"
+    ),
 ) -> None:
     """Change a password on the database and in the credential store."""
     manager = CredentialManager()
@@ -611,7 +614,19 @@ def rotate(
         raise typer.Exit(1)
 
     console.print(f"✅ [green]Rotated '{name}' -- database and store now agree.[/green]")
-    _show_generated_password(new_password)
+
+    # Applied on the database and saved to the store, so there is nothing to do
+    # with the value. Printing it by default would put a working credential into
+    # scrollback for no reason.
+    if not show and not yes:
+        show = Confirm.ask("Show the new password?", default=False)
+
+    if show:
+        _show_generated_password(new_password)
+    else:
+        console.print(
+            f"[dim]Read it any time with: dbcreds show {name} --password[/dim]"
+        )
 
 
 @app.command()

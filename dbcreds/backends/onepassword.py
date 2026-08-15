@@ -305,15 +305,23 @@ class OnePasswordBackend(CredentialBackend):
             logger.error(f"Could not parse existing item '{title}': {e}")
             return False
 
-        by_label = {f.get("label") or f.get("id"): f for f in item.get("fields", [])}
+        existing_fields = item.get("fields", [])
+        by_label = {f.get("label") or f.get("id"): f for f in existing_fields}
         for field in fields:
             label = field["label"]
             if label in by_label:
                 by_label[label]["value"] = field["value"]
             else:
-                item.setdefault("fields", []).append(field)
+                existing_fields.append(field)
 
-        result = self._run(["item", "edit", title, *self._vault_args()], stdin=json.dumps(item))
+        # Send only the fields. `op item get` returns identity metadata (id,
+        # vault, category, version) and echoing it back makes op refuse the
+        # edit when it disagrees with the item being edited -- "identity
+        # inconsistencies: for Vault Name Private ... inconsistent with
+        # vault names disagree -- which happens when no explicit vault was given.
+        template = json.dumps({"fields": existing_fields})
+
+        result = self._run(["item", "edit", title, *self._vault_args()], stdin=template)
         if result.returncode != 0:
             logger.error(f"Could not update 1Password item '{title}': {result.stderr.strip()}")
             return False

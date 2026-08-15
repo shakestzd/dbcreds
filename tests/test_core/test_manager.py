@@ -392,6 +392,53 @@ class TestSecretStoredOnce:
         assert "dbcreds:test-env" in metadata_only.storage
 
 
+class FailingSecretBackend(MockBackend):
+    """A secret store that is available but rejects writes."""
+
+    def set_credential(self, key, username, password, metadata) -> bool:
+        return False
+
+
+class TestNoFallbackAcrossSecretStores:
+    """
+    A failed high-priority store must not be papered over by a lower one.
+
+    Reads take the first backend that answers. If the primary store rejects the
+    write and a secondary accepts it, the primary keeps returning its old value
+    on every read -- so the write looks successful while nothing that reads it
+    sees the change.
+    """
+
+    def test_raises_rather_than_falling_back(self, temp_config_dir, sample_credentials):
+        primary, secondary = FailingSecretBackend(), MockBackend()
+        manager = _manager_with_backends(temp_config_dir, [primary, secondary])
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        with pytest.raises(CredentialError, match="shadowing"):
+            manager.set_credentials("test-env", **sample_credentials)
+
+    def test_lower_priority_store_is_left_untouched(
+        self, temp_config_dir, sample_credentials
+    ):
+        """The fallback store must not end up holding a secret nothing reads."""
+        primary, secondary = FailingSecretBackend(), MockBackend()
+        manager = _manager_with_backends(temp_config_dir, [primary, secondary])
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        with pytest.raises(CredentialError):
+            manager.set_credentials("test-env", **sample_credentials)
+
+        assert secondary.storage == {}
+
+    def test_error_names_the_backend_that_failed(self, temp_config_dir, sample_credentials):
+        primary = FailingSecretBackend()
+        manager = _manager_with_backends(temp_config_dir, [primary, MockBackend()])
+        manager.add_environment("test-env", DatabaseType.POSTGRESQL)
+
+        with pytest.raises(CredentialError, match="FailingSecretBackend"):
+            manager.set_credentials("test-env", **sample_credentials)
+
+
 class TestSecretCapableBackendRequired:
     """Regression tests: a metadata-only backend must not be reported as success."""
 

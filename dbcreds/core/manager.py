@@ -377,6 +377,7 @@ class CredentialManager:
         # having been saved -- they strip it. Only a backend that durably
         # round-trips the secret counts as a real store.
         secret_stored = False
+        secret_failures: List[str] = []
         metadata_only_stored = []
         _get_logger().debug(f"Storing credentials for {env_name} (dates updated)")
         for backend in self.backends:
@@ -390,12 +391,16 @@ class CredentialManager:
                 metadata.pop('environment', None)
                 stores_secrets = getattr(backend, "stores_secrets", True)
 
-                # The secret goes to one store, not every store. Writing it to
-                # each secret-capable backend would scatter copies that then
-                # have to be rotated and revoked independently.
-                if stores_secrets and secret_stored:
+                # The secret goes to one store, not every store, and never to a
+                # lower-priority one after a higher-priority store has failed.
+                # Reads take the first backend that answers, so a stale entry in
+                # the failed backend would shadow whatever was written here --
+                # the write would look successful while every later read
+                # returned the old password.
+                if stores_secrets and (secret_stored or secret_failures):
                     _get_logger().debug(
-                        f"Skipping {backend_name}: secret already stored elsewhere"
+                        f"Skipping {backend_name}: the secret is already handled "
+                        "by a higher-priority backend"
                     )
                     continue
 
@@ -408,17 +413,30 @@ class CredentialManager:
                     else:
                         metadata_only_stored.append(backend_name)
                         _get_logger().debug(f"Stored metadata only in {backend_name}")
+                elif stores_secrets:
+                    secret_failures.append(backend_name)
+                    _get_logger().error(f"{backend_name} rejected the credential")
             except Exception as e:
+                if getattr(backend, "stores_secrets", True):
+                    secret_failures.append(backend_name)
                 _get_logger().debug(f"Failed to store in {backend_name}: {e}")
 
         if not secret_stored:
             available = ", ".join(b.__class__.__name__ for b in self.backends) or "none"
-            detail = (
-                f" Only metadata-only backends accepted it ({', '.join(metadata_only_stored)}), "
-                "which do not store passwords."
-                if metadata_only_stored
-                else ""
-            )
+            if secret_failures:
+                detail = (
+                    f" {', '.join(secret_failures)} rejected it, and dbcreds does "
+                    "not fall back to a lower-priority store: the failed one would "
+                    "keep shadowing it on every read."
+                )
+            elif metadata_only_stored:
+                detail = (
+                    f" Only metadata-only backends accepted it "
+                    f"({', '.join(metadata_only_stored)}), which do not store passwords."
+                )
+            else:
+                detail = ""
+
             raise CredentialError(
                 f"Failed to store the password for environment '{env_name}': no secure "
                 f"credential store accepted it.{detail} Available backends: {available}. "
@@ -641,6 +659,28 @@ class CredentialManager:
         # Preserve the environment's expiry policy rather than resetting it.
         expires_days = _expiry_window_days(creds)
 
+        def _undo(reason: str) -> None:
+            """Put the database back, so the store stays the source of truth."""
+            try:
+                rollback = adapter.password_change_statement(
+                    creds.username, current_password, user_host=user_host
+                )
+                adapter.execute(new_creds, rollback)
+                if adapter.check_connection(creds):
+                    raise RotationError(
+                        f"{reason} Rolled the database back; nothing changed."
+                    )
+            except RotationError:
+                raise
+            except Exception:  # noqa: BLE001 -- the rollback itself failed
+                pass
+
+            raise RotationError(
+                f"{reason} The database could not be rolled back either.",
+                new_password=new_password,
+                applied=True,
+            )
+
         try:
             self.set_credentials(
                 env_name,
@@ -654,28 +694,23 @@ class CredentialManager:
                 **creds.options,
             )
         except Exception as store_error:
-            # Put the database back, so the store stays the source of truth.
-            try:
-                rollback = adapter.password_change_statement(
-                    creds.username, current_password, user_host=user_host
-                )
-                adapter.execute(new_creds, rollback)
-                if adapter.check_connection(creds):
-                    raise RotationError(
-                        f"Could not save the new password ({store_error}). "
-                        "Rolled the database back; nothing changed."
-                    ) from store_error
-            except RotationError:
-                raise
-            except Exception:  # noqa: BLE001 -- rollback itself failed
-                pass
+            _undo(f"Could not save the new password ({store_error}).")
 
-            raise RotationError(
-                f"Could not save the new password ({store_error}) and could not "
-                "roll the database back.",
-                new_password=new_password,
-                applied=True,
-            ) from store_error
+        # A write reporting success is not proof the store will hand the new
+        # password back: a higher-priority backend holding a stale value shadows
+        # it on every read. Read it back the same way a later call would.
+        try:
+            readback = self.get_credentials(env_name, check_expiry=False)
+            stored_matches = readback.password.get_secret_value() == new_password
+        except Exception as e:  # noqa: BLE001 -- treat any read failure as a mismatch
+            _get_logger().error(f"Could not read back the stored password: {e}")
+            stored_matches = False
+
+        if not stored_matches:
+            _undo(
+                "The store accepted the new password but does not return it; "
+                "something is shadowing it."
+            )
 
         _get_logger().info(f"Rotated password for environment: {env_name}")
         return new_password
