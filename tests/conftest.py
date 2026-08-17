@@ -11,6 +11,21 @@ from dbcreds.web.main import app
 
 
 @pytest.fixture(autouse=True)
+def isolate_dbcreds_config(tmp_path, monkeypatch):
+    """
+    Point dbcreds' settings file at a temp directory for every test.
+
+    Without this, tests read whatever the developer has configured on their own
+    machine, so a real `dbcreds config set` makes assertions about defaults fail.
+    """
+    monkeypatch.setattr(
+        "dbcreds.core.config._DEFAULT_CONFIG_DIR", str(tmp_path / "dbcreds")
+    )
+    for name in ("DBCREDS_OP_VAULT", "DBCREDS_OP_ITEM_TITLE", "DBCREDS_OP_ACCOUNT"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def reset_manager_singleton():
     """
     Reset the CredentialManager singleton around every test.

@@ -146,20 +146,21 @@ class TestBackendUsesConfig:
         assert OnePasswordBackend().item_title("dbcreds:prod") == "prod"
 
 
-def test_no_installation_specific_defaults_in_the_source():
+def test_no_installation_is_baked_in(temp_config_dir, monkeypatch):
     """
-    dbcreds is open source and must not carry one installation's names.
+    dbcreds is open source, so no installation's vault or account is a default.
 
-    A vault name, account, or hostname belonging to whoever wrote the code is
-    configuration, and configuration lives in the config file -- not in a default,
-    a docstring example, or a test fixture.
+    Asserted behaviourally rather than by grepping for particular strings: a
+    blacklist would have to name the very things it forbids, and would sit in a
+    public repository doing so.
     """
-    import pathlib
+    from dbcreds.backends.onepassword import OnePasswordBackend
 
-    root = pathlib.Path(__file__).resolve().parents[2] / "dbcreds"
-    sources = "\n".join(
-        path.read_text() for path in root.rglob("*.py")
-    )
+    monkeypatch.setattr("dbcreds.core.config._DEFAULT_CONFIG_DIR", temp_config_dir)
+    backend = OnePasswordBackend()
 
-    for name in ("MyVault", "example-org", "example-db", "example-schema"):
-        assert name not in sources, f"{name!r} is installation-specific"
+    # Unset means unset: op's own default vault and account are used.
+    assert backend.vault is None
+    assert backend.account is None
+    # The only default is a placeholder, carrying no site's naming convention.
+    assert backend.title_template == "{env}"
