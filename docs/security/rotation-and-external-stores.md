@@ -90,5 +90,4 @@ characters logs a warning.
 - **`ssl_mode` is inert.** It is stored and preserved but no adapter enforces
   TLS, so connections are made with driver defaults.
 - **No automated dependency, secret, or static analysis scanning.** The project
-  has no CI, so the scanning controls in the SDLC's §3.3/§3.4 are not enforced
-  here.
+  has no CI, so nothing enforces those checks on a push.
