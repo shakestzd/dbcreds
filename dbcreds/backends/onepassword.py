@@ -10,10 +10,14 @@ Secrets are never passed as process arguments. Items are written by piping a
 JSON template to `op` on stdin, which is also what 1Password's own CLI help
 recommends for sensitive values.
 
-Configuration:
-    DBCREDS_OP_VAULT       Vault to use (default: op's own default vault)
-    DBCREDS_OP_ITEM_TITLE  Item title template (default: 'dbcreds:{env}')
-    DBCREDS_OP_ACCOUNT     Account shorthand, for multi-account setups
+Configuration is machine-specific, so it is not hard-coded here. Set it once with
+`dbcreds config`, or override per shell with the environment variable:
+
+    onepassword.vault       DBCREDS_OP_VAULT       which vault to look in
+    onepassword.item_title  DBCREDS_OP_ITEM_TITLE  title template, '{env}' default
+    onepassword.account     DBCREDS_OP_ACCOUNT     account shorthand
+
+    dbcreds config set onepassword.vault MyVault
 """
 
 import json
@@ -24,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 from dbcreds.backends.base import CredentialBackend
+from dbcreds.core.config import get_setting
 
 # Built-in fields of 1Password's "database" category, mapped to the credential
 # fields dbcreds cares about. Keeping these native means the item stays useful
@@ -89,13 +94,20 @@ class OnePasswordBackend(CredentialBackend):
             timeout: Seconds to allow each op invocation, which may prompt for
                 biometric or password unlock
         """
-        self.vault = vault or os.environ.get("DBCREDS_OP_VAULT")
+        # Explicit argument, then environment, then the config file dbcreds
+        # manages, then the default. Nothing about any particular vault or
+        # account is baked into this module.
+        self.vault = vault or get_setting(
+            "onepassword", "vault", env_var="DBCREDS_OP_VAULT"
+        )
         self.title_template = (
             title_template
-            or os.environ.get("DBCREDS_OP_ITEM_TITLE")
+            or get_setting("onepassword", "item_title", env_var="DBCREDS_OP_ITEM_TITLE")
             or _DEFAULT_TITLE_TEMPLATE
         )
-        self.account = account or os.environ.get("DBCREDS_OP_ACCOUNT")
+        self.account = account or get_setting(
+            "onepassword", "account", env_var="DBCREDS_OP_ACCOUNT"
+        )
         self.timeout = timeout
 
     # -- helpers ---------------------------------------------------------
@@ -315,10 +327,10 @@ class OnePasswordBackend(CredentialBackend):
                 existing_fields.append(field)
 
         # Send only the fields. `op item get` returns identity metadata (id,
-        # vault, category, version) and echoing it back makes op refuse the
-        # edit when it disagrees with the item being edited -- "identity
-        # inconsistencies: for Vault Name Private ... inconsistent with
-        # vault names disagree -- which happens when no explicit vault was given.
+        # vault, category, version) and echoing it back makes op refuse the edit
+        # when it disagrees with the item being edited ("identity
+        # inconsistencies: ... Vault Name ... inconsistent with ..."), which
+        # happens whenever no explicit vault was given.
         template = json.dumps({"fields": existing_fields})
 
         result = self._run(["item", "edit", title, *self._vault_args()], stdin=template)

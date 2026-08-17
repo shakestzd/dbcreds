@@ -94,18 +94,23 @@ dbcreds manages credentials; it does not have to hold them. With the
 in one shared, auditable place rather than being copied onto each machine.
 
 ```bash
-export DBCREDS_OP_VAULT="MyVault"
-export DBCREDS_OP_ITEM_TITLE="Doris {env}"   # default: {env}
+dbcreds config set onepassword.vault MyVault
+dbcreds config set onepassword.item_title "Warehouse {env}"   # default: {env}
+dbcreds config show
 
 dbcreds backends        # confirm OnePasswordBackend is first
 ```
+
+Settings live in `~/.dbcreds/config.json`, written owner-only, and hold pointers
+rather than secrets. The matching environment variables — `DBCREDS_OP_VAULT`,
+`DBCREDS_OP_ITEM_TITLE`, `DBCREDS_OP_ACCOUNT` — override the file for one shell.
 
 By default the item title *is* the environment name, so an environment called
 `warehouse-prod` maps to an item titled `warehouse-prod`. Keep it that way unless you
 have to: `:` and `/` are structural characters in `op://` secret references, so
 a title containing one cannot be read with `op read` or `op run` at all.
 
-`DBCREDS_OP_ITEM_TITLE` is what lets dbcreds adopt items that already exist
+`onepassword.item_title` is what lets dbcreds adopt items that already exist
 under their own names. Register an environment against one without re-entering
 the password:
 
@@ -137,7 +142,7 @@ Supported dialects and the statement each uses:
 |------|-----------|
 | `postgresql` | `ALTER USER "u" WITH PASSWORD '…'` |
 | `mysql` | `ALTER USER 'u'@'%' IDENTIFIED BY '…'` — MySQL 8 removed `PASSWORD()` |
-| `doris` | `SET PASSWORD FOR u@'%' = PASSWORD('…')` — Doris/Doris |
+| `doris` | `SET PASSWORD FOR u@'%' = PASSWORD('…')` — Apache Doris |
 
 `--user-host` sets the host part of the account identity for MySQL-family
 databases; PostgreSQL ignores it.

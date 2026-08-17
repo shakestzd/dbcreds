@@ -694,6 +694,74 @@ def generate(
     console.print("🧹 Clipboard cleared.")
 
 
+config_app = typer.Typer(help="Manage dbcreds settings, e.g. which 1Password vault to use.")
+app.add_typer(config_app, name="config")
+
+
+def _split_key(dotted: str) -> tuple:
+    """Split 'section.key' into its parts, or exit with guidance."""
+    section, _, key = dotted.partition(".")
+    if not section or not key:
+        console.print(
+            f"[red]'{dotted}' is not a setting name.[/red] Use section.key, "
+            "e.g. [bold]onepassword.vault[/bold]."
+        )
+        raise typer.Exit(1)
+    return section, key
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Show the current settings and where they are stored."""
+    from dbcreds.core.config import config_path, load_config
+
+    path = config_path()
+    settings = load_config()
+
+    console.print(f"[dim]{path}[/dim]")
+    if not settings:
+        console.print(
+            "\nNo settings yet. For example:\n"
+            "  [bold]dbcreds config set onepassword.vault MyVault[/bold]"
+        )
+        return
+
+    table = Table(box=box.ROUNDED)
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value")
+    for section in sorted(settings):
+        for key in sorted(settings[section]):
+            table.add_row(f"{section}.{key}", str(settings[section][key]))
+    console.print(table)
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Setting name, e.g. onepassword.vault"),
+    value: str = typer.Argument(..., help="Value to store"),
+) -> None:
+    """Store a setting."""
+    from dbcreds.core.config import config_path, set_setting
+
+    section, name = _split_key(key)
+    set_setting(section, name, value)
+    console.print(f"✅ [green]{key}[/green] = {value}  [dim]({config_path()})[/dim]")
+
+
+@config_app.command("unset")
+def config_unset(
+    key: str = typer.Argument(..., help="Setting name, e.g. onepassword.vault"),
+) -> None:
+    """Remove a setting."""
+    from dbcreds.core.config import unset_setting
+
+    section, name = _split_key(key)
+    if unset_setting(section, name):
+        console.print(f"✅ [green]Removed {key}[/green]")
+    else:
+        console.print(f"[yellow]{key} was not set[/yellow]")
+
+
 @app.command()
 def backends() -> None:
     """Show which credential backends are active and which one stores passwords."""

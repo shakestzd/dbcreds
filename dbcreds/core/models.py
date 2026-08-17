@@ -18,7 +18,7 @@ class DatabaseType(str, Enum):
 
     POSTGRESQL = "postgresql"
     MYSQL = "mysql"
-    # Apache Doris / Doris. Speaks the MySQL wire protocol, but its password
+    # Apache Doris. Speaks the MySQL wire protocol, but its password
     # statement differs from MySQL 8, which removed PASSWORD().
     DORIS = "doris"
     ORACLE = "oracle"

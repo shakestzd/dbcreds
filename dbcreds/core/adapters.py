@@ -202,7 +202,7 @@ class MySQLAdapter(DatabaseAdapter):
 
 class DorisAdapter(MySQLAdapter):
     """
-    Apache Doris / Doris.
+    Apache Doris.
 
     Wire-compatible with MySQL, so it reuses the connection logic, but it still
     uses the pre-8.0 SET PASSWORD form rather than ALTER USER.
