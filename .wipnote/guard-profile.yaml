@@ -1,0 +1,15 @@
+guards:
+    completion:
+        - name: pytest
+          cmd: uv run pytest
+    quality:
+        - name: make-test
+          cmd: make test
+        - name: make-lint
+          cmd: make lint
+        - name: ruff
+          cmd: uv run ruff check .
+approved:
+    signature: sha256:b1b9eb76d4c7e4ed4f07269b71c8382c22675803fe7f36c5ad0eed7b3894575f
+    by: Shakes Dlamini
+    at: "2026-08-17T13:56:47Z"
